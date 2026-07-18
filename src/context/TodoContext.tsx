@@ -2,6 +2,11 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useNotifications } from '../hooks/useNotifications';
 import confetti from 'canvas-confetti';
+import { getFirebaseInstance, saveFirebaseConfig, clearFirebaseConfig } from '../firebase';
+import type { FirebaseConfig } from '../firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import type { User } from 'firebase/auth';
+import { collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 
 export interface Task {
   id: string;
@@ -58,6 +63,16 @@ interface TodoContextType {
   exportTasks: () => string;
   isInstallable: boolean;
   installApp: () => void;
+  
+  // Firebase Auth & Cloud Sync
+  user: User | null;
+  isFirebaseConnected: boolean;
+  firebaseConfig: FirebaseConfig | null;
+  saveConfig: (config: FirebaseConfig) => boolean;
+  clearConfig: () => void;
+  logout: () => Promise<void>;
+  mergeLocalTasks: () => Promise<void>;
+  hasMergeableLocalTasks: boolean;
 }
 
 const TodoContext = createContext<TodoContextType | undefined>(undefined);
@@ -92,6 +107,12 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
 
+  // Firebase auth & sync states
+  const [user, setUser] = useState<User | null>(null);
+  const [isFirebaseConnected, setIsFirebaseConnected] = useState(false);
+  const [firebaseConfig, setFirebaseConfig] = useState<FirebaseConfig | null>(null);
+  const [hasMergeableLocalTasks, setHasMergeableLocalTasks] = useState(false);
+
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
@@ -121,6 +142,179 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setDeferredPrompt(null);
       setIsInstallable(false);
     });
+  };
+
+  // Sync initial Firebase state
+  useEffect(() => {
+    const { isConfigured, config } = getFirebaseInstance();
+    setIsFirebaseConnected(isConfigured);
+    setFirebaseConfig(config);
+  }, []);
+
+  // Set up Firebase Auth listener
+  useEffect(() => {
+    const { auth } = getFirebaseInstance();
+    if (!auth) {
+      setUser(null);
+      return;
+    }
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        // Logged in: Backup local storage tasks if any exist
+        const currentLocalTasksStr = localStorage.getItem('flowtodo_tasks') || '[]';
+        const currentLocalTasks = JSON.parse(currentLocalTasksStr);
+        if (currentLocalTasks.length > 0) {
+          if (!localStorage.getItem('flowtodo_local_tasks_backup')) {
+            localStorage.setItem('flowtodo_local_tasks_backup', currentLocalTasksStr);
+          }
+          setHasMergeableLocalTasks(true);
+        }
+
+        const currentLocalCatsStr = localStorage.getItem('flowtodo_categories') || '[]';
+        if (currentLocalCatsStr !== '[]' && !localStorage.getItem('flowtodo_local_categories_backup')) {
+          localStorage.setItem('flowtodo_local_categories_backup', currentLocalCatsStr);
+        }
+      } else {
+        // Logged out: Restore local sandbox backup if it exists
+        const backupTasks = localStorage.getItem('flowtodo_local_tasks_backup');
+        if (backupTasks) {
+          setTasks(JSON.parse(backupTasks));
+          localStorage.removeItem('flowtodo_local_tasks_backup');
+        }
+        const backupCats = localStorage.getItem('flowtodo_local_categories_backup');
+        if (backupCats) {
+          setCategories(JSON.parse(backupCats));
+          localStorage.removeItem('flowtodo_local_categories_backup');
+        }
+        setHasMergeableLocalTasks(false);
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, [isFirebaseConnected]);
+
+  // Set up Real-time Firestore Sync Listeners
+  useEffect(() => {
+    const { db } = getFirebaseInstance();
+    if (!user || !db) return;
+
+    // Listen to Tasks
+    const tasksRef = collection(db, 'users', user.uid, 'tasks');
+    const unsubscribeTasks = onSnapshot(tasksRef, (snapshot) => {
+      const firestoreTasks: Task[] = [];
+      snapshot.forEach((doc) => {
+        firestoreTasks.push(doc.data() as Task);
+      });
+      setTasks(firestoreTasks);
+    }, (error) => {
+      console.error("Firestore tasks snapshot error:", error);
+    });
+
+    // Listen to Categories
+    const categoriesRef = collection(db, 'users', user.uid, 'categories');
+    const unsubscribeCategories = onSnapshot(categoriesRef, (snapshot) => {
+      const firestoreCategories: Category[] = [];
+      snapshot.forEach((doc) => {
+        firestoreCategories.push(doc.data() as Category);
+      });
+      if (firestoreCategories.length === 0) {
+        setCategories(DEFAULT_CATEGORIES);
+      } else {
+        setCategories(firestoreCategories);
+      }
+    }, (error) => {
+      console.error("Firestore categories snapshot error:", error);
+    });
+
+    // Listen to Settings
+    const settingsRef = doc(db, 'users', user.uid, 'settings', 'config');
+    const unsubscribeSettings = onSnapshot(settingsRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setSettings(docSnap.data() as Settings);
+      }
+    }, (error) => {
+      console.error("Firestore settings snapshot error:", error);
+    });
+
+    // Listen to Streak / Profile
+    const profileRef = doc(db, 'users', user.uid, 'profile', 'streak');
+    const unsubscribeProfile = onSnapshot(profileRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.streak !== undefined) setStreak(data.streak);
+        if (data.bestStreak !== undefined) setBestStreak(data.bestStreak);
+      }
+    }, (error) => {
+      console.error("Firestore profile snapshot error:", error);
+    });
+
+    return () => {
+      unsubscribeTasks();
+      unsubscribeCategories();
+      unsubscribeSettings();
+      unsubscribeProfile();
+    };
+  }, [user, isFirebaseConnected]);
+
+  // Handle Firebase Config Save/Clear Actions
+  const saveConfig = (config: FirebaseConfig): boolean => {
+    const success = saveFirebaseConfig(config);
+    setIsFirebaseConnected(success);
+    setFirebaseConfig(success ? config : null);
+    return success;
+  };
+
+  const clearConfig = () => {
+    clearFirebaseConfig();
+    setIsFirebaseConnected(false);
+    setFirebaseConfig(null);
+    setUser(null);
+  };
+
+  const logout = async () => {
+    const { auth } = getFirebaseInstance();
+    if (auth) {
+      await signOut(auth);
+    }
+  };
+
+  const mergeLocalTasks = async () => {
+    const { db } = getFirebaseInstance();
+    if (!user || !db) return;
+
+    try {
+      const batch = writeBatch(db);
+      
+      const backupTasksStr = localStorage.getItem('flowtodo_local_tasks_backup') || '[]';
+      const backupTasks: Task[] = JSON.parse(backupTasksStr);
+      
+      const backupCatsStr = localStorage.getItem('flowtodo_local_categories_backup') || '[]';
+      const backupCats: Category[] = JSON.parse(backupCatsStr);
+
+      backupTasks.forEach((task) => {
+        const taskDoc = doc(db, 'users', user.uid, 'tasks', task.id);
+        batch.set(taskDoc, task);
+      });
+
+      backupCats.forEach((cat) => {
+        const catDoc = doc(db, 'users', user.uid, 'categories', cat.id);
+        batch.set(catDoc, cat);
+      });
+
+      const settingsDoc = doc(db, 'users', user.uid, 'settings', 'config');
+      batch.set(settingsDoc, settings);
+
+      await batch.commit();
+
+      localStorage.removeItem('flowtodo_local_tasks_backup');
+      localStorage.removeItem('flowtodo_local_categories_backup');
+      setHasMergeableLocalTasks(false);
+    } catch (e) {
+      console.error('Failed to merge local tasks:', e);
+      alert('Failed to merge tasks. Please try again.');
+    }
   };
 
   useEffect(() => {
@@ -154,7 +348,6 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const reminderTime = new Date(taskTime.getTime() - task.reminderOffset * 60 * 1000);
 
         if (now >= reminderTime && now < taskTime) {
-          
           sendNotification(`Reminder: ${task.title}`, {
             body: `Due in ${task.reminderOffset} minutes [${task.category}]`,
             tag: task.id,
@@ -192,13 +385,12 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [tasks, settings.notificationsEnabled]);
 
   const calculateStreaks = () => {
-    
     const completedDates = tasks
       .filter((t) => t.isCompleted && t.completedDate)
       .map((t) => t.completedDate as string);
 
     if (completedDates.length === 0) {
-      setStreak(0);
+      updateStreaks(0, bestStreak);
       return;
     }
 
@@ -213,7 +405,7 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const hasCompletedYesterday = uniqueDates.includes(yesterdayStr);
 
     if (!hasCompletedToday && !hasCompletedYesterday) {
-      setStreak(0);
+      updateStreaks(0, bestStreak);
       return;
     }
 
@@ -230,23 +422,51 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    setStreak(current);
-    if (current > bestStreak) {
-      setBestStreak(current);
+    const newBest = current > bestStreak ? current : bestStreak;
+    updateStreaks(current, newBest);
+  };
+
+  const updateStreaks = async (newStreak: number, newBestStreak: number) => {
+    const { db } = getFirebaseInstance();
+    if (user && db) {
+      if (newStreak !== streak || newBestStreak !== bestStreak) {
+        try {
+          await setDoc(doc(db, 'users', user.uid, 'profile', 'streak'), {
+            streak: newStreak,
+            bestStreak: newBestStreak,
+          });
+        } catch (e) {
+          console.error("Firestore updateStreaks error:", e);
+        }
+      }
+    } else {
+      setStreak(newStreak);
+      if (newStreak > bestStreak) {
+        setBestStreak(newStreak);
+      }
     }
   };
 
-  const addTask = (taskInput: Omit<Task, 'id' | 'isCompleted' | 'isPinned'>) => {
+  const addTask = async (taskInput: Omit<Task, 'id' | 'isCompleted' | 'isPinned'>) => {
+    const { db } = getFirebaseInstance();
     const newTask: Task = {
       ...taskInput,
       id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       isCompleted: false,
       isPinned: false,
     };
-    setTasks((prev) => [...prev, newTask]);
+
+    if (user && db) {
+      try {
+        await setDoc(doc(db, 'users', user.uid, 'tasks', newTask.id), newTask);
+      } catch (e) {
+        console.error("Firestore addTask error:", e);
+      }
+    } else {
+      setTasks((prev) => [...prev, newTask]);
+    }
 
     if (settings.notificationsEnabled) {
-      
       sendNotification(`Task Added: ${newTask.title}`, {
         body: `Scheduled for ${newTask.dueDate} ${newTask.dueTime || ''}`,
         tag: 'task-added',
@@ -254,60 +474,88 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const editTask = (id: string, updatedFields: Partial<Task>) => {
-    setTasks((prev) =>
-      prev.map((task) => {
-        if (task.id === id) {
-          
-          if (updatedFields.dueDate || updatedFields.dueTime || updatedFields.reminderOffset) {
-            setNotifiedTaskIds((notified) => notified.filter((nId) => nId !== id && nId !== `overdue-${id}`));
-          }
-          return { ...task, ...updatedFields };
-        }
-        return task;
-      })
-    );
-  };
+  const editTask = async (id: string, updatedFields: Partial<Task>) => {
+    const { db } = getFirebaseInstance();
+    
+    if (updatedFields.dueDate || updatedFields.dueTime || updatedFields.reminderOffset) {
+      setNotifiedTaskIds((notified) => notified.filter((nId) => nId !== id && nId !== `overdue-${id}`));
+    }
 
-  const deleteTask = (id: string) => {
-    setTasks((prev) => prev.filter((task) => task.id !== id));
-    setNotifiedTaskIds((notified) => notified.filter((nId) => nId !== id && nId !== `overdue-${id}`));
-  };
-
-  const toggleComplete = (id: string) => {
-    const todayStr = new Date().toISOString().split('T')[0];
-    let isFullyCompleted = false;
-
-    setTasks((prev) => {
-      const updated = prev.map((task) => {
-        if (task.id === id) {
-          const nextCompletedState = !task.isCompleted;
-
-          if (nextCompletedState && task.repeat !== 'none') {
-            setTimeout(() => spawnRecurringTask(task), 600);
-          }
-
-          return {
-            ...task,
-            isCompleted: nextCompletedState,
-            completedDate: nextCompletedState ? todayStr : undefined,
-          };
-        }
-        return task;
-      });
-
-      const todayTasks = updated.filter(t => t.dueDate === todayStr);
-      const completedToday = todayTasks.filter(t => t.isCompleted);
-      
-      if (todayTasks.length > 0 && completedToday.length === todayTasks.length) {
-        isFullyCompleted = true;
+    if (user && db) {
+      try {
+        const taskRef = doc(db, 'users', user.uid, 'tasks', id);
+        await updateDoc(taskRef, updatedFields);
+      } catch (e) {
+        console.error("Firestore editTask error:", e);
       }
+    } else {
+      setTasks((prev) =>
+        prev.map((task) => {
+          if (task.id === id) {
+            return { ...task, ...updatedFields };
+          }
+          return task;
+        })
+      );
+    }
+  };
 
-      return updated;
-    });
+  const deleteTask = async (id: string) => {
+    const { db } = getFirebaseInstance();
+    setNotifiedTaskIds((notified) => notified.filter((nId) => nId !== id && nId !== `overdue-${id}`));
 
-    if (isFullyCompleted) {
-      
+    if (user && db) {
+      try {
+        await deleteDoc(doc(db, 'users', user.uid, 'tasks', id));
+      } catch (e) {
+        console.error("Firestore deleteTask error:", e);
+      }
+    } else {
+      setTasks((prev) => prev.filter((task) => task.id !== id));
+    }
+  };
+
+  const toggleComplete = async (id: string) => {
+    const { db } = getFirebaseInstance();
+    const todayStr = new Date().toISOString().split('T')[0];
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+
+    const nextCompletedState = !task.isCompleted;
+    const completedDate = nextCompletedState ? todayStr : undefined;
+
+    if (nextCompletedState && task.repeat !== 'none') {
+      setTimeout(() => spawnRecurringTask(task), 600);
+    }
+
+    if (user && db) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'tasks', id), {
+          isCompleted: nextCompletedState,
+          completedDate: completedDate || null,
+        });
+      } catch (e) {
+        console.error("Firestore toggleComplete error:", e);
+      }
+    } else {
+      setTasks((prev) => {
+        return prev.map((t) => {
+          if (t.id === id) {
+            return {
+              ...t,
+              isCompleted: nextCompletedState,
+              completedDate: nextCompletedState ? todayStr : undefined,
+            };
+          }
+          return t;
+        });
+      });
+    }
+
+    const todayTasks = tasks.map(t => t.id === id ? { ...t, isCompleted: nextCompletedState } : t).filter(t => t.dueDate === todayStr);
+    const completedToday = todayTasks.filter(t => t.isCompleted);
+    
+    if (todayTasks.length > 0 && completedToday.length === todayTasks.length && nextCompletedState) {
       confetti({
         particleCount: 150,
         spread: 80,
@@ -344,31 +592,89 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const togglePin = (id: string) => {
-    setTasks((prev) =>
-      prev.map((task) => (task.id === id ? { ...task, isPinned: !task.isPinned } : task))
-    );
+  const togglePin = async (id: string) => {
+    const { db } = getFirebaseInstance();
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+
+    if (user && db) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'tasks', id), {
+          isPinned: !task.isPinned
+        });
+      } catch (e) {
+        console.error("Firestore togglePin error:", e);
+      }
+    } else {
+      setTasks((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, isPinned: !t.isPinned } : t))
+      );
+    }
   };
 
-  const addCategory = (name: string, color: string) => {
+  const addCategory = async (name: string, color: string) => {
+    const { db } = getFirebaseInstance();
     const newCat: Category = {
       id: `cat-${Date.now()}`,
       name,
       color,
     };
-    setCategories((prev) => [...prev, newCat]);
+
+    if (user && db) {
+      try {
+        await setDoc(doc(db, 'users', user.uid, 'categories', newCat.id), newCat);
+      } catch (e) {
+        console.error("Firestore addCategory error:", e);
+      }
+    } else {
+      setCategories((prev) => [...prev, newCat]);
+    }
   };
 
-  const deleteCategory = (id: string) => {
-    setCategories((prev) => prev.filter((c) => c.id !== id));
+  const deleteCategory = async (id: string) => {
+    const { db } = getFirebaseInstance();
+    if (user && db) {
+      try {
+        await deleteDoc(doc(db, 'users', user.uid, 'categories', id));
+      } catch (e) {
+        console.error("Firestore deleteCategory error:", e);
+      }
+    } else {
+      setCategories((prev) => prev.filter((c) => c.id !== id));
+    }
   };
 
-  const clearCompleted = () => {
-    setTasks((prev) => prev.filter((task) => !task.isCompleted));
+  const clearCompleted = async () => {
+    const { db } = getFirebaseInstance();
+    if (user && db) {
+      try {
+        const batch = writeBatch(db);
+        const completedTasks = tasks.filter(t => t.isCompleted);
+        completedTasks.forEach(t => {
+          batch.delete(doc(db, 'users', user.uid, 'tasks', t.id));
+        });
+        await batch.commit();
+      } catch (e) {
+        console.error("Firestore clearCompleted error:", e);
+      }
+    } else {
+      setTasks((prev) => prev.filter((task) => !task.isCompleted));
+    }
   };
 
-  const updateSettings = (updated: Partial<Settings>) => {
-    setSettings((prev) => ({ ...prev, ...updated }));
+  const updateSettings = async (updated: Partial<Settings>) => {
+    const { db } = getFirebaseInstance();
+    const newSettings = { ...settings, ...updated };
+
+    if (user && db) {
+      try {
+        await setDoc(doc(db, 'users', user.uid, 'settings', 'config'), newSettings);
+      } catch (e) {
+        console.error("Firestore updateSettings error:", e);
+      }
+    } else {
+      setSettings(newSettings);
+    }
   };
 
   const exportTasks = (): string => {
@@ -421,6 +727,14 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         exportTasks,
         isInstallable,
         installApp,
+        user,
+        isFirebaseConnected,
+        firebaseConfig,
+        saveConfig,
+        clearConfig,
+        logout,
+        mergeLocalTasks,
+        hasMergeableLocalTasks,
       }}
     >
       {children}
