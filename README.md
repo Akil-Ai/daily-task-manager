@@ -8,7 +8,7 @@ Whether you're managing personal goals, work assignments, or study schedules, Ta
 
 ## 🚀 Live Demo
 
-> **Website:** https://your-vercel-link.vercel.app
+> **Website:** https://akil-ai.github.io/daily-task-manager/
 
 ---
 
