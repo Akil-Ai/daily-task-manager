@@ -83,28 +83,6 @@ Whether you're managing personal goals, work assignments, or study schedules, Ta
 
 ---
 
-# 📸 Screenshots
-
-## Dashboard
-
-<img src="screenshots/dashboard.png" width="900"/>
-
-## Today's Tasks
-
-<img src="screenshots/tasks.png" width="900"/>
-
-## Add Task
-
-<img src="screenshots/add-task.png" width="900"/>
-
-## Statistics
-
-<img src="screenshots/statistics.png" width="900"/>
-
-> Replace these screenshots with actual images after development.
-
----
-
 # 🛠️ Tech Stack
 
 | Technology | Purpose |
@@ -356,9 +334,9 @@ See the `LICENSE` file for more details.
 
 **Akil S**
 
-- GitHub: https://github.com/yourusername
-- LinkedIn: https://www.linkedin.com/in/your-linkedin/
-- Email: your-email@example.com
+- GitHub: https://github.com/Akil-Ai
+- LinkedIn: www.linkedin.com/in/akil008
+- Email: akilrmhss@gmail.com
 
 ---
 
