@@ -56,6 +56,8 @@ interface TodoContextType {
   updateSettings: (settings: Partial<Settings>) => void;
   importTasks: (jsonStr: string) => boolean;
   exportTasks: () => string;
+  isInstallable: boolean;
+  installApp: () => void;
 }
 
 const TodoContext = createContext<TodoContextType | undefined>(undefined);
@@ -86,6 +88,40 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [bestStreak, setBestStreak] = useLocalStorage<number>('flowtodo_best_streak', 0);
 
   const { sendNotification } = useNotifications();
+
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    const handleAppInstalled = () => {
+      setDeferredPrompt(null);
+      setIsInstallable(false);
+    };
+
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const installApp = () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => {
+      setDeferredPrompt(null);
+      setIsInstallable(false);
+    });
+  };
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -383,6 +419,8 @@ export const TodoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateSettings,
         importTasks,
         exportTasks,
+        isInstallable,
+        installApp,
       }}
     >
       {children}

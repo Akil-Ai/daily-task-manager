@@ -12,7 +12,7 @@ interface DashboardViewProps {
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenAddSheet, onEditClick }) => {
-  const { tasks, streak, bestStreak, addTask } = useTodo();
+  const { tasks, streak, bestStreak, addTask, isInstallable, installApp } = useTodo();
   const [quickTitle, setQuickTitle] = useState('');
 
   const todayStr = new Date().toISOString().split('T')[0];
@@ -68,6 +68,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onOpenAddSheet, on
           <span className="text-sm font-bold">{streak} d</span>
         </div>
       </div>
+
+      {isInstallable && (
+        <div className="mb-6 bg-gradient-to-r from-indigo-500 to-indigo-600 text-white p-4.5 rounded-3xl flex items-center justify-between shadow-md shadow-indigo-500/10 gap-3">
+          <div>
+            <h4 className="text-sm font-black leading-tight">Install FlowTodo App</h4>
+            <p className="text-[10px] text-indigo-100 mt-1 font-semibold leading-normal">
+              Download to your home screen for rapid offline access and custom reminders.
+            </p>
+          </div>
+          <button
+            onClick={installApp}
+            className="px-4 py-2 bg-white text-indigo-600 font-extrabold text-xs rounded-xl flex-shrink-0 shadow active:scale-95 transition-transform"
+          >
+            Install
+          </button>
+        </div>
+      )}
 
       {}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">

@@ -4,7 +4,7 @@ import { useNotifications } from '../hooks/useNotifications';
 import { Moon, Sun, Bell, Download, Upload, Trash2, Sparkles } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
-  const { settings, updateSettings, clearCompleted, exportTasks, importTasks } = useTodo();
+  const { settings, updateSettings, clearCompleted, exportTasks, importTasks, isInstallable, installApp } = useTodo();
   const { requestPermission, permission } = useNotifications();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -165,6 +165,17 @@ export const SettingsView: React.FC = () => {
       </h2>
       
       <div className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800/80 rounded-3xl p-5 shadow-sm flex flex-col gap-4">
+        {isInstallable && (
+          <button
+            onClick={installApp}
+            className="w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/20 dark:hover:bg-indigo-950/35 border border-indigo-100/50 dark:border-indigo-900/30 text-indigo-600 dark:text-indigo-400 transition-colors duration-150 text-left font-bold"
+          >
+            <div className="flex items-center gap-3">
+              <Download size={18} className="text-indigo-500" />
+              <span className="text-xs">Install Application</span>
+            </div>
+          </button>
+        )}
         
         {}
         <button
