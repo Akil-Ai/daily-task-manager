@@ -1,11 +1,11 @@
 const CACHE_NAME = 'todo-app-cache-v1';
 const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/favicon.ico',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png'
+  './',
+  'index.html',
+  'favicon.ico',
+  'manifest.json',
+  'icon-192.png',
+  'icon-512.png'
 ];
 
 self.addEventListener('install', (e) => {
@@ -64,7 +64,7 @@ self.addEventListener('fetch', (e) => {
       }).catch(() => {
         
         if (e.request.mode === 'navigate') {
-          return caches.match('/index.html');
+          return caches.match('index.html');
         }
       });
     })
